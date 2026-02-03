@@ -37,16 +37,14 @@ interface Comment {
 }
 
 export default function SocialMediaApp() {
-  // Views - Simple flow: NAME_ENTRY -> FEED
-  const [view, setView] = useState<'NAME_ENTRY' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE' | 'CHAT'>('NAME_ENTRY');
+  // Views - Start directly on CHAT (no login)
+  const [view, setView] = useState<'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE' | 'CHAT'>('CHAT');
   const [showCreatePost, setShowCreatePost] = useState(false);
   const [showComments, setShowComments] = useState<string | null>(null);
-  const [chatWith, setChatWith] = useState<UserProfile | null>(null);
+  const [chatWith, setChatWith] = useState<UserProfile | null>({ username: 'Sarah', public_key: 'demo' });
 
-  // User
-  const [myUsername, setMyUsername] = useState("");
-  const [inputUsername, setInputUsername] = useState("");
-  const [usernameError, setUsernameError] = useState("");
+  // User - Default demo user (no login required)
+  const [myUsername, setMyUsername] = useState("You");
   const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Posts
@@ -61,13 +59,10 @@ export default function SocialMediaApp() {
   // Stories
   const [stories, setStories] = useState<UserProfile[]>([]);
 
-  // Check if user already logged in
+  // Auto-load data on mount
   useEffect(() => {
-    const savedUsername = localStorage.getItem('social_username');
-    if (savedUsername) {
-      setMyUsername(savedUsername);
-      setView('FEED');
-    }
+    fetchPosts();
+    fetchUsers();
   }, []);
 
   // --- FETCH DATA ---
@@ -132,46 +127,6 @@ export default function SocialMediaApp() {
     }
   }, [view, myUsername]);
 
-  // --- JOIN WITH USERNAME ---
-  const handleJoin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setUsernameError("");
-
-    const name = inputUsername.trim();
-    if (!name || name.length < 2) {
-      setUsernameError("Username must be at least 2 characters");
-      return;
-    }
-
-    // Check if username already exists
-    const { data: existingUser } = await supabase
-      .from('users')
-      .select('username')
-      .eq('username', name)
-      .single();
-
-    if (existingUser) {
-      setUsernameError("This username is already taken. Choose another!");
-      return;
-    }
-
-    // Create new user
-    const { error } = await supabase.from('users').insert({
-      username: name,
-      public_key: `key-${Date.now()}`
-    });
-
-    if (error) {
-      setUsernameError("Error creating account. Try again.");
-      return;
-    }
-
-    // Save to localStorage and proceed
-    localStorage.setItem('social_username', name);
-    setMyUsername(name);
-    setView('FEED');
-  };
-
   // --- POSTS ---
   const createPost = async () => {
     if (!newPostContent.trim()) return;
@@ -218,56 +173,14 @@ export default function SocialMediaApp() {
     fetchPosts();
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('social_username');
-    setMyUsername("");
-    setInputUsername("");
-    setView('NAME_ENTRY');
-  };
-
-  // --- NAME ENTRY SCREEN (Simple, No Login) ---
-  if (view === 'NAME_ENTRY') {
+  // If viewing CHAT, show directly the beautiful chat UI
+  if (view === 'CHAT' && chatWith) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
-        <motion.div
-          initial={{ y: 30, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
-        >
-          <div className="p-8 text-center">
-            <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Compass className="w-10 h-10 text-white" />
-            </div>
-            <h1 className="text-2xl font-bold mb-2">Welcome to Socially</h1>
-            <p className="text-gray-500 text-sm mb-6">Choose a unique username to get started</p>
-
-            <form onSubmit={handleJoin} className="space-y-4">
-              <div>
-                <input
-                  type="text"
-                  value={inputUsername}
-                  onChange={e => setInputUsername(e.target.value)}
-                  className="input text-center text-lg"
-                  placeholder="Enter your username"
-                  autoFocus
-                />
-              </div>
-
-              {usernameError && (
-                <p className="text-red-500 text-sm">{usernameError}</p>
-              )}
-
-              <button type="submit" className="btn btn-primary w-full py-3 text-base">
-                Join Now
-              </button>
-            </form>
-
-            <p className="text-xs text-gray-400 mt-6">
-              Your username must be unique. Once chosen, it cannot be changed.
-            </p>
-          </div>
-        </motion.div>
-      </div>
+      <ChatPage
+        myUsername={myUsername}
+        chatWith={{ username: chatWith.username }}
+        onBack={() => { setChatWith(null); setView('FEED'); }}
+      />
     );
   }
 
@@ -317,9 +230,6 @@ export default function SocialMediaApp() {
               <div className="font-medium">{myUsername}</div>
               <div className="text-xs text-gray-500">Online</div>
             </div>
-            <button onClick={handleLogout} title="Logout">
-              <LogOut className="w-5 h-5 text-gray-400 hover:text-red-500" />
-            </button>
           </div>
         </div>
       </aside>
