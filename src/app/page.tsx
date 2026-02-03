@@ -1,14 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
-import { generateKeyPair, KeyPair } from '@/utils/crypto';
-import { IdentityVault } from '@/utils/vault';
 import { supabase } from '@/utils/supabase';
 import {
   Home, Search, PlusSquare, Heart, MessageCircle, User,
-  MoreHorizontal, Bookmark, Send, Image, X, ChevronLeft,
-  ChevronRight, Settings, LogOut, Bell, Compass, Film,
-  ThumbsUp, MessageSquare, Share2, Smile, Camera, Lock
+  MoreHorizontal, Bookmark, Send, Image, X,
+  Settings, LogOut, Compass, Film, Smile, Camera, Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -39,20 +36,15 @@ interface Comment {
 }
 
 export default function SocialMediaApp() {
-  // Views
-  const [view, setView] = useState<'BOOT' | 'AUTH' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE'>('BOOT');
+  // Views - Simple flow: NAME_ENTRY -> FEED
+  const [view, setView] = useState<'NAME_ENTRY' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE'>('NAME_ENTRY');
   const [showCreatePost, setShowCreatePost] = useState(false);
   const [showComments, setShowComments] = useState<string | null>(null);
 
-  // Auth
-  const [pin, setPin] = useState("");
-  const [username, setUsername] = useState("");
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("");
-
   // User
-  const [myKeys, setMyKeys] = useState<KeyPair | null>(null);
   const [myUsername, setMyUsername] = useState("");
+  const [inputUsername, setInputUsername] = useState("");
+  const [usernameError, setUsernameError] = useState("");
   const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Posts
@@ -67,13 +59,13 @@ export default function SocialMediaApp() {
   // Stories
   const [stories, setStories] = useState<UserProfile[]>([]);
 
-  // --- BOOT ---
+  // Check if user already logged in
   useEffect(() => {
-    setTimeout(() => {
-      const vault = localStorage.getItem('social_vault');
-      setIsRegistering(!vault);
-      setView('AUTH');
-    }, 1500);
+    const savedUsername = localStorage.getItem('social_username');
+    if (savedUsername) {
+      setMyUsername(savedUsername);
+      setView('FEED');
+    }
   }, []);
 
   // --- FETCH DATA ---
@@ -84,7 +76,6 @@ export default function SocialMediaApp() {
       .order('created_at', { ascending: false });
 
     if (postsData) {
-      // Get likes count for each post
       const postsWithStats = await Promise.all(postsData.map(async (post) => {
         const { count: likesCount } = await supabase
           .from('likes')
@@ -133,52 +124,50 @@ export default function SocialMediaApp() {
   };
 
   useEffect(() => {
-    if (view === 'FEED') {
+    if (view === 'FEED' && myUsername) {
       fetchPosts();
       fetchUsers();
     }
   }, [view, myUsername]);
 
-  // --- AUTH ---
-  const handleAuth = async (e: React.FormEvent) => {
+  // --- JOIN WITH USERNAME ---
+  const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setStatusMsg("");
+    setUsernameError("");
 
-    try {
-      if (isRegistering) {
-        if (pin.length < 4 || !username.trim()) {
-          setStatusMsg("Enter name & 4+ digit PIN");
-          return;
-        }
-        const keys = generateKeyPair();
-
-        const { error } = await supabase.from('users').insert({
-          username: username.trim(),
-          public_key: keys.publicKey
-        });
-        if (error) throw error;
-
-        const vault = await IdentityVault.lock(JSON.stringify({ ...keys, username: username.trim() }), pin);
-        localStorage.setItem('social_vault', vault);
-
-        setMyKeys(keys);
-        setMyUsername(username.trim());
-        setView('FEED');
-      } else {
-        const vault = localStorage.getItem('social_vault');
-        if (!vault) { setIsRegistering(true); return; }
-
-        const json = await IdentityVault.unlock(vault, pin);
-        if (!json) { setStatusMsg("Wrong PIN"); return; }
-
-        const data = JSON.parse(json);
-        setMyKeys({ publicKey: data.publicKey, secretKey: data.secretKey });
-        setMyUsername(data.username);
-        setView('FEED');
-      }
-    } catch (err: any) {
-      setStatusMsg(err.message || "Error");
+    const name = inputUsername.trim();
+    if (!name || name.length < 2) {
+      setUsernameError("Username must be at least 2 characters");
+      return;
     }
+
+    // Check if username already exists
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('username')
+      .eq('username', name)
+      .single();
+
+    if (existingUser) {
+      setUsernameError("This username is already taken. Choose another!");
+      return;
+    }
+
+    // Create new user
+    const { error } = await supabase.from('users').insert({
+      username: name,
+      public_key: `key-${Date.now()}`
+    });
+
+    if (error) {
+      setUsernameError("Error creating account. Try again.");
+      return;
+    }
+
+    // Save to localStorage and proceed
+    localStorage.setItem('social_username', name);
+    setMyUsername(name);
+    setView('FEED');
   };
 
   // --- POSTS ---
@@ -227,27 +216,15 @@ export default function SocialMediaApp() {
     fetchPosts();
   };
 
-  // --- BOOT SCREEN ---
-  if (view === 'BOOT') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="text-center text-white"
-        >
-          <div className="w-20 h-20 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Compass className="w-10 h-10" />
-          </div>
-          <h1 className="text-3xl font-bold mb-2">Socially</h1>
-          <p className="text-white/70">Connect. Share. Inspire.</p>
-        </motion.div>
-      </div>
-    );
-  }
+  const handleLogout = () => {
+    localStorage.removeItem('social_username');
+    setMyUsername("");
+    setInputUsername("");
+    setView('NAME_ENTRY');
+  };
 
-  // --- AUTH SCREEN ---
-  if (view === 'AUTH') {
+  // --- NAME ENTRY SCREEN (Simple, No Login) ---
+  if (view === 'NAME_ENTRY') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
         <motion.div
@@ -256,57 +233,36 @@ export default function SocialMediaApp() {
           className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
         >
           <div className="p-8 text-center">
-            <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Compass className="w-8 h-8 text-white" />
+            <div className="w-20 h-20 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <Compass className="w-10 h-10 text-white" />
             </div>
-            <h1 className="text-2xl font-bold mb-1">
-              {isRegistering ? 'Create Account' : 'Welcome Back'}
-            </h1>
-            <p className="text-gray-500 text-sm mb-6">
-              {isRegistering ? 'Join the community' : 'Sign in to continue'}
-            </p>
+            <h1 className="text-2xl font-bold mb-2">Welcome to Socially</h1>
+            <p className="text-gray-500 text-sm mb-6">Choose a unique username to get started</p>
 
-            <form onSubmit={handleAuth} className="space-y-4 text-left">
-              {isRegistering && (
-                <div>
-                  <label className="text-sm font-medium text-gray-700 mb-1 block">Username</label>
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={e => setUsername(e.target.value)}
-                    className="input"
-                    placeholder="Choose a username"
-                  />
-                </div>
-              )}
-
+            <form onSubmit={handleJoin} className="space-y-4">
               <div>
-                <label className="text-sm font-medium text-gray-700 mb-1 block">PIN Code</label>
                 <input
-                  type="password"
-                  value={pin}
-                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
-                  maxLength={6}
-                  className="input text-center text-2xl tracking-[0.5em]"
-                  placeholder="••••"
+                  type="text"
+                  value={inputUsername}
+                  onChange={e => setInputUsername(e.target.value)}
+                  className="input text-center text-lg"
+                  placeholder="Enter your username"
+                  autoFocus
                 />
               </div>
 
-              {statusMsg && <p className="text-red-500 text-sm text-center">{statusMsg}</p>}
+              {usernameError && (
+                <p className="text-red-500 text-sm">{usernameError}</p>
+              )}
 
               <button type="submit" className="btn btn-primary w-full py-3 text-base">
-                {isRegistering ? 'Get Started' : 'Sign In'}
+                Join Now
               </button>
             </form>
 
-            {!isRegistering && (
-              <button
-                onClick={() => { localStorage.clear(); window.location.reload(); }}
-                className="mt-4 text-sm text-gray-400 hover:text-red-500"
-              >
-                Reset Account
-              </button>
-            )}
+            <p className="text-xs text-gray-400 mt-6">
+              Your username must be unique. Once chosen, it cannot be changed.
+            </p>
           </div>
         </motion.div>
       </div>
@@ -359,7 +315,7 @@ export default function SocialMediaApp() {
               <div className="font-medium">{myUsername}</div>
               <div className="text-xs text-gray-500">Online</div>
             </div>
-            <button onClick={() => { localStorage.clear(); window.location.reload(); }}>
+            <button onClick={handleLogout} title="Logout">
               <LogOut className="w-5 h-5 text-gray-400 hover:text-red-500" />
             </button>
           </div>
@@ -547,7 +503,7 @@ export default function SocialMediaApp() {
                     <div><strong>0</strong> followers</div>
                     <div><strong>0</strong> following</div>
                   </div>
-                  <p className="text-gray-600">No bio yet. Click Edit Profile to add one!</p>
+                  <p className="text-gray-600">Welcome to Socially! Start sharing your moments.</p>
                 </div>
               </div>
 
@@ -576,8 +532,8 @@ export default function SocialMediaApp() {
           <div className="max-w-xl mx-auto p-4">
             <div className="bg-white rounded-xl border p-6 text-center">
               <Lock className="w-12 h-12 mx-auto mb-3 text-indigo-500" />
-              <h2 className="text-xl font-bold mb-2">Secure Messages</h2>
-              <p className="text-gray-500 mb-4">Your messages are end-to-end encrypted</p>
+              <h2 className="text-xl font-bold mb-2">Messages</h2>
+              <p className="text-gray-500 mb-4">Chat with other users</p>
               <div className="space-y-2">
                 {users.filter(u => u.username !== myUsername).map(user => (
                   <div key={user.username} className="flex items-center gap-3 p-3 border rounded-xl hover:bg-gray-50 cursor-pointer">
