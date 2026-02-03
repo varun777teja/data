@@ -1,39 +1,48 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
-import { generateKeyPair, encryptMessage, decryptMessage, KeyPair, EncryptedMessage } from '@/utils/crypto';
+import { generateKeyPair, KeyPair } from '@/utils/crypto';
 import { IdentityVault } from '@/utils/vault';
 import { supabase } from '@/utils/supabase';
 import {
-  MessageCircle, Phone, CircleDot, Settings, Search, MoreVertical,
-  Camera, Paperclip, Mic, Send, Check, CheckCheck, Plus, ArrowLeft,
-  Shield, Lock, User, MessageSquare
+  Home, Search, PlusSquare, Heart, MessageCircle, User,
+  MoreHorizontal, Bookmark, Send, Image, X, ChevronLeft,
+  ChevronRight, Settings, LogOut, Bell, Compass, Film,
+  ThumbsUp, MessageSquare, Share2, Smile, Camera, Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // --- Types ---
-interface MessageLog {
-  id: string;
-  sender_username: string;
-  receiver_username: string;
-  encryptedContent: EncryptedMessage;
-  timestamp: string;
-}
-
 interface UserProfile {
   username: string;
   public_key: string;
-  lastMessage?: string;
-  lastMessageTime?: string;
-  unread?: number;
+  avatar_url?: string;
+  bio?: string;
 }
 
-type TabType = 'CHATS' | 'STATUS' | 'CALLS' | 'SETTINGS';
+interface Post {
+  id: string;
+  author_username: string;
+  content: string;
+  image_url?: string;
+  created_at: string;
+  likes_count: number;
+  comments_count: number;
+  is_liked: boolean;
+}
 
-export default function WhatsAppSecureChat() {
+interface Comment {
+  id: string;
+  author_username: string;
+  content: string;
+  created_at: string;
+}
+
+export default function SocialMediaApp() {
   // Views
-  const [view, setView] = useState<'BOOT' | 'AUTH' | 'MAIN' | 'CHAT'>('BOOT');
-  const [activeTab, setActiveTab] = useState<TabType>('CHATS');
+  const [view, setView] = useState<'BOOT' | 'AUTH' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE'>('BOOT');
+  const [showCreatePost, setShowCreatePost] = useState(false);
+  const [showComments, setShowComments] = useState<string | null>(null);
 
   // Auth
   const [pin, setPin] = useState("");
@@ -41,77 +50,94 @@ export default function WhatsAppSecureChat() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
 
-  // Identity
+  // User
   const [myKeys, setMyKeys] = useState<KeyPair | null>(null);
   const [myUsername, setMyUsername] = useState("");
-
-  // Users & Chat
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [selectedPeer, setSelectedPeer] = useState<UserProfile | null>(null);
-  const [messages, setMessages] = useState<MessageLog[]>([]);
-  const [inputMsg, setInputMsg] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Posts
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [newPostContent, setNewPostContent] = useState("");
+  const [newPostImage, setNewPostImage] = useState("");
+
+  // Comments
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newComment, setNewComment] = useState("");
+
+  // Stories
+  const [stories, setStories] = useState<UserProfile[]>([]);
 
   // --- BOOT ---
   useEffect(() => {
     setTimeout(() => {
-      const vault = localStorage.getItem('wa_vault');
+      const vault = localStorage.getItem('social_vault');
       setIsRegistering(!vault);
       setView('AUTH');
-    }, 2000);
+    }, 1500);
   }, []);
 
-  // --- FETCH USERS ---
-  const fetchUsers = async () => {
-    const { data } = await supabase.from('users').select('*');
-    if (data) {
-      setUsers(data.map(u => ({
-        username: u.username,
-        public_key: u.public_key,
-        lastMessage: "Tap to start secure chat",
-        lastMessageTime: "",
-        unread: 0
-      })));
+  // --- FETCH DATA ---
+  const fetchPosts = async () => {
+    const { data: postsData } = await supabase
+      .from('posts')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (postsData) {
+      // Get likes count for each post
+      const postsWithStats = await Promise.all(postsData.map(async (post) => {
+        const { count: likesCount } = await supabase
+          .from('likes')
+          .select('*', { count: 'exact', head: true })
+          .eq('post_id', post.id);
+
+        const { count: commentsCount } = await supabase
+          .from('comments')
+          .select('*', { count: 'exact', head: true })
+          .eq('post_id', post.id);
+
+        const { data: myLike } = await supabase
+          .from('likes')
+          .select('*')
+          .eq('post_id', post.id)
+          .eq('username', myUsername)
+          .single();
+
+        return {
+          ...post,
+          likes_count: likesCount || 0,
+          comments_count: commentsCount || 0,
+          is_liked: !!myLike
+        };
+      }));
+
+      setPosts(postsWithStats);
     }
   };
 
-  // --- REALTIME MESSAGES ---
+  const fetchUsers = async () => {
+    const { data } = await supabase.from('users').select('*');
+    if (data) {
+      setUsers(data);
+      setStories(data.slice(0, 8));
+    }
+  };
+
+  const fetchComments = async (postId: string) => {
+    const { data } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('post_id', postId)
+      .order('created_at', { ascending: true });
+    if (data) setComments(data);
+  };
+
   useEffect(() => {
-    if (view !== 'CHAT' && view !== 'MAIN') return;
-
-    const channel = supabase.channel('messages_channel')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
-        const newMsg = payload.new;
-        if (newMsg.sender_username === myUsername || newMsg.receiver_username === myUsername) {
-          const encrypted: EncryptedMessage = {
-            ciphertext: newMsg.ciphertext,
-            nonce: newMsg.nonce,
-            authorPublicKey: ""
-          };
-          setMessages(prev => {
-            if (prev.find(m => m.id === newMsg.id)) return prev;
-            return [...prev, {
-              id: newMsg.id,
-              sender_username: newMsg.sender_username,
-              receiver_username: newMsg.receiver_username,
-              encryptedContent: encrypted,
-              timestamp: newMsg.created_at
-            }];
-          });
-        }
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    if (view === 'FEED') {
+      fetchPosts();
+      fetchUsers();
+    }
   }, [view, myUsername]);
-
-  // --- SCROLL TO BOTTOM ---
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   // --- AUTH ---
   const handleAuth = async (e: React.FormEvent) => {
@@ -121,7 +147,7 @@ export default function WhatsAppSecureChat() {
     try {
       if (isRegistering) {
         if (pin.length < 4 || !username.trim()) {
-          setStatusMsg("Enter a valid name and 4+ digit PIN");
+          setStatusMsg("Enter name & 4+ digit PIN");
           return;
         }
         const keys = generateKeyPair();
@@ -133,95 +159,88 @@ export default function WhatsAppSecureChat() {
         if (error) throw error;
 
         const vault = await IdentityVault.lock(JSON.stringify({ ...keys, username: username.trim() }), pin);
-        localStorage.setItem('wa_vault', vault);
+        localStorage.setItem('social_vault', vault);
 
         setMyKeys(keys);
         setMyUsername(username.trim());
-        await fetchUsers();
-        setView('MAIN');
+        setView('FEED');
       } else {
-        const vault = localStorage.getItem('wa_vault');
+        const vault = localStorage.getItem('social_vault');
         if (!vault) { setIsRegistering(true); return; }
 
         const json = await IdentityVault.unlock(vault, pin);
-        if (!json) { setStatusMsg("Incorrect PIN"); return; }
+        if (!json) { setStatusMsg("Wrong PIN"); return; }
 
         const data = JSON.parse(json);
         setMyKeys({ publicKey: data.publicKey, secretKey: data.secretKey });
         setMyUsername(data.username);
-        await fetchUsers();
-        setView('MAIN');
+        setView('FEED');
       }
     } catch (err: any) {
       setStatusMsg(err.message || "Error");
     }
   };
 
-  // --- SEND MESSAGE ---
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputMsg.trim() || !selectedPeer || !myKeys) return;
+  // --- POSTS ---
+  const createPost = async () => {
+    if (!newPostContent.trim()) return;
 
-    const encrypted = encryptMessage(inputMsg, myKeys.secretKey, selectedPeer.public_key);
-
-    const { error } = await supabase.from('messages').insert({
-      sender_username: myUsername,
-      receiver_username: selectedPeer.username,
-      nonce: encrypted.nonce,
-      ciphertext: encrypted.ciphertext
+    const { error } = await supabase.from('posts').insert({
+      author_username: myUsername,
+      content: newPostContent,
+      image_url: newPostImage || null
     });
 
-    if (!error) setInputMsg("");
-  };
-
-  // --- OPEN CHAT ---
-  const openChat = (user: UserProfile) => {
-    setSelectedPeer(user);
-    setMessages([]);
-    setView('CHAT');
-    // Load past messages
-    loadMessages(user.username);
-  };
-
-  const loadMessages = async (peerUsername: string) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .or(`sender_username.eq.${myUsername},receiver_username.eq.${myUsername}`)
-      .order('created_at', { ascending: true });
-
-    if (data) {
-      const filtered = data.filter(m =>
-        (m.sender_username === peerUsername && m.receiver_username === myUsername) ||
-        (m.sender_username === myUsername && m.receiver_username === peerUsername)
-      );
-      setMessages(filtered.map(m => ({
-        id: m.id,
-        sender_username: m.sender_username,
-        receiver_username: m.receiver_username,
-        encryptedContent: { ciphertext: m.ciphertext, nonce: m.nonce, authorPublicKey: "" },
-        timestamp: m.created_at
-      })));
+    if (!error) {
+      setNewPostContent("");
+      setNewPostImage("");
+      setShowCreatePost(false);
+      fetchPosts();
     }
+  };
+
+  const toggleLike = async (postId: string, isLiked: boolean) => {
+    if (isLiked) {
+      await supabase.from('likes').delete()
+        .eq('post_id', postId)
+        .eq('username', myUsername);
+    } else {
+      await supabase.from('likes').insert({
+        post_id: postId,
+        username: myUsername
+      });
+    }
+    fetchPosts();
+  };
+
+  const addComment = async (postId: string) => {
+    if (!newComment.trim()) return;
+
+    await supabase.from('comments').insert({
+      post_id: postId,
+      author_username: myUsername,
+      content: newComment
+    });
+
+    setNewComment("");
+    fetchComments(postId);
+    fetchPosts();
   };
 
   // --- BOOT SCREEN ---
   if (view === 'BOOT') {
     return (
-      <div className="boot-screen min-h-screen flex flex-col items-center justify-center text-white">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center">
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          className="flex flex-col items-center gap-4"
+          className="text-center text-white"
         >
-          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center">
-            <MessageCircle className="w-12 h-12 text-[#128C7E]" />
+          <div className="w-20 h-20 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Compass className="w-10 h-10" />
           </div>
-          <h1 className="text-2xl font-light tracking-wider">SecureChat</h1>
-          <div className="flex items-center gap-2 text-sm opacity-80">
-            <Shield className="w-4 h-4" />
-            <span>End-to-End Encrypted</span>
-          </div>
+          <h1 className="text-3xl font-bold mb-2">Socially</h1>
+          <p className="text-white/70">Connect. Share. Inspire.</p>
         </motion.div>
       </div>
     );
@@ -230,317 +249,524 @@ export default function WhatsAppSecureChat() {
   // --- AUTH SCREEN ---
   if (view === 'AUTH') {
     return (
-      <div className="min-h-screen bg-[#F0F2F5] flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
         <motion.div
-          initial={{ y: 20, opacity: 0 }}
+          initial={{ y: 30, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="w-full max-w-sm bg-white rounded-2xl shadow-xl overflow-hidden"
+          className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
         >
-          {/* Header */}
-          <div className="bg-[#008069] p-6 text-white text-center">
-            <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
-              <Lock className="w-8 h-8" />
+          <div className="p-8 text-center">
+            <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <Compass className="w-8 h-8 text-white" />
             </div>
-            <h1 className="text-xl font-medium">{isRegistering ? 'Create Account' : 'Welcome Back'}</h1>
-            <p className="text-sm opacity-80 mt-1">Your messages are end-to-end encrypted</p>
-          </div>
+            <h1 className="text-2xl font-bold mb-1">
+              {isRegistering ? 'Create Account' : 'Welcome Back'}
+            </h1>
+            <p className="text-gray-500 text-sm mb-6">
+              {isRegistering ? 'Join the community' : 'Sign in to continue'}
+            </p>
 
-          {/* Form */}
-          <form onSubmit={handleAuth} className="p-6 space-y-4">
-            {isRegistering && (
+            <form onSubmit={handleAuth} className="space-y-4 text-left">
+              {isRegistering && (
+                <div>
+                  <label className="text-sm font-medium text-gray-700 mb-1 block">Username</label>
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={e => setUsername(e.target.value)}
+                    className="input"
+                    placeholder="Choose a username"
+                  />
+                </div>
+              )}
+
               <div>
-                <label className="text-xs text-gray-500 mb-1 block">Your Name</label>
+                <label className="text-sm font-medium text-gray-700 mb-1 block">PIN Code</label>
                 <input
-                  type="text"
-                  value={username}
-                  onChange={e => setUsername(e.target.value)}
-                  className="w-full border-b-2 border-gray-200 focus:border-[#008069] py-2 text-lg transition-colors"
-                  placeholder="Enter your name"
+                  type="password"
+                  value={pin}
+                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
+                  maxLength={6}
+                  className="input text-center text-2xl tracking-[0.5em]"
+                  placeholder="••••"
                 />
               </div>
-            )}
 
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Security PIN</label>
-              <input
-                type="password"
-                value={pin}
-                onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
-                maxLength={6}
-                className="w-full border-b-2 border-gray-200 focus:border-[#008069] py-2 text-2xl tracking-[0.5em] text-center transition-colors"
-                placeholder="••••"
-              />
-            </div>
+              {statusMsg && <p className="text-red-500 text-sm text-center">{statusMsg}</p>}
 
-            {statusMsg && (
-              <p className="text-red-500 text-sm text-center">{statusMsg}</p>
-            )}
-
-            <button
-              type="submit"
-              className="w-full bg-[#008069] hover:bg-[#006a57] text-white py-3 rounded-full font-medium transition-colors"
-            >
-              {isRegistering ? 'Get Started' : 'Unlock'}
-            </button>
+              <button type="submit" className="btn btn-primary w-full py-3 text-base">
+                {isRegistering ? 'Get Started' : 'Sign In'}
+              </button>
+            </form>
 
             {!isRegistering && (
               <button
-                type="button"
                 onClick={() => { localStorage.clear(); window.location.reload(); }}
-                className="w-full text-red-500 text-sm py-2 hover:underline"
+                className="mt-4 text-sm text-gray-400 hover:text-red-500"
               >
-                Reset & Create New Account
+                Reset Account
               </button>
             )}
-          </form>
+          </div>
         </motion.div>
       </div>
     );
   }
 
-  // --- MAIN SCREEN (WhatsApp Layout) ---
-  if (view === 'MAIN') {
-    const filteredUsers = users.filter(u =>
-      u.username !== myUsername &&
-      u.username.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-
-    return (
-      <div className="min-h-screen bg-[#F0F2F5] flex">
-        {/* LEFT PANEL - Chat List */}
-        <div className="w-full md:w-[400px] bg-white flex flex-col border-r border-gray-200">
-          {/* Header */}
-          <div className="h-14 bg-[#F0F2F5] flex items-center justify-between px-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-[#DFE5E7] rounded-full flex items-center justify-center">
-                <User className="w-6 h-6 text-[#54656F]" />
-              </div>
-              <span className="font-medium text-[#111B21]">{myUsername}</span>
-            </div>
-            <div className="flex items-center gap-4 text-[#54656F]">
-              <button className="p-2 hover:bg-gray-200 rounded-full"><MessageSquare className="w-5 h-5" /></button>
-              <button className="p-2 hover:bg-gray-200 rounded-full"><MoreVertical className="w-5 h-5" /></button>
-            </div>
+  // --- MAIN APP ---
+  return (
+    <div className="min-h-screen bg-[#FAFAFA]">
+      {/* Desktop Sidebar */}
+      <aside className="hidden lg:flex fixed left-0 top-0 bottom-0 w-64 bg-white border-r border-gray-200 flex-col p-4">
+        {/* Logo */}
+        <div className="flex items-center gap-3 p-3 mb-6">
+          <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-xl flex items-center justify-center">
+            <Compass className="w-6 h-6 text-white" />
           </div>
+          <span className="text-xl font-bold bg-gradient-to-r from-indigo-500 to-pink-500 bg-clip-text text-transparent">Socially</span>
+        </div>
 
-          {/* Search */}
-          <div className="p-2">
-            <div className="bg-[#F0F2F5] rounded-lg flex items-center px-4 py-2 gap-3">
-              <Search className="w-5 h-5 text-[#54656F]" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search or start new chat"
-                className="bg-transparent flex-1 text-sm outline-none placeholder-[#667781]"
-              />
+        {/* Nav Items */}
+        <nav className="flex-1 space-y-1">
+          {[
+            { icon: Home, label: 'Home', view: 'FEED' },
+            { icon: Search, label: 'Explore', view: 'EXPLORE' },
+            { icon: Film, label: 'Reels', view: 'FEED' },
+            { icon: MessageCircle, label: 'Messages', view: 'MESSAGES' },
+            { icon: Heart, label: 'Notifications', view: 'FEED' },
+            { icon: PlusSquare, label: 'Create', action: () => setShowCreatePost(true) },
+            { icon: User, label: 'Profile', view: 'PROFILE' },
+          ].map((item, i) => (
+            <button
+              key={i}
+              onClick={() => item.action ? item.action() : item.view && setView(item.view as any)}
+              className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all hover:bg-gray-100 ${view === item.view ? 'font-semibold' : ''
+                }`}
+            >
+              <item.icon className="w-6 h-6" />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        {/* User */}
+        <div className="border-t pt-4 mt-4">
+          <div className="flex items-center gap-3 p-3">
+            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
+              {myUsername[0]?.toUpperCase()}
             </div>
+            <div className="flex-1">
+              <div className="font-medium">{myUsername}</div>
+              <div className="text-xs text-gray-500">Online</div>
+            </div>
+            <button onClick={() => { localStorage.clear(); window.location.reload(); }}>
+              <LogOut className="w-5 h-5 text-gray-400 hover:text-red-500" />
+            </button>
           </div>
+        </div>
+      </aside>
 
-          {/* Tabs */}
-          <div className="flex border-b border-gray-100">
-            {(['CHATS', 'STATUS', 'CALLS'] as TabType[]).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex-1 py-3 text-sm font-medium transition-colors ${activeTab === tab
-                    ? 'text-[#008069] border-b-2 border-[#008069]'
-                    : 'text-[#54656F] hover:bg-gray-50'
-                  }`}
-              >
-                {tab}
-              </button>
-            ))}
+      {/* Main Content */}
+      <main className="lg:ml-64 min-h-screen pb-20 lg:pb-0">
+        {/* Mobile Header */}
+        <header className="lg:hidden sticky top-0 z-40 bg-white border-b px-4 py-3 flex items-center justify-between">
+          <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-500 to-pink-500 bg-clip-text text-transparent">Socially</h1>
+          <div className="flex items-center gap-4">
+            <button className="relative">
+              <Heart className="w-6 h-6" />
+              <span className="badge">3</span>
+            </button>
+            <button onClick={() => setView('MESSAGES')}>
+              <MessageCircle className="w-6 h-6" />
+            </button>
           </div>
+        </header>
 
-          {/* Chat List */}
-          <div className="flex-1 overflow-y-auto">
-            {activeTab === 'CHATS' && (
-              <>
-                {filteredUsers.length === 0 ? (
-                  <div className="p-8 text-center text-gray-500">
-                    <MessageCircle className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                    <p>No contacts found</p>
-                    <p className="text-sm">Start chatting with someone!</p>
+        {/* Feed View */}
+        {view === 'FEED' && (
+          <div className="max-w-xl mx-auto">
+            {/* Stories */}
+            <div className="bg-white border-b lg:border lg:rounded-xl lg:my-4 p-4">
+              <div className="flex gap-4 overflow-x-auto scrollbar-hide">
+                {/* Add Story */}
+                <button onClick={() => setShowCreatePost(true)} className="flex flex-col items-center gap-1 flex-shrink-0">
+                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center border-2 border-dashed border-gray-300 hover:border-indigo-500 transition-colors">
+                    <PlusSquare className="w-6 h-6 text-gray-400" />
                   </div>
-                ) : (
-                  filteredUsers.map(user => (
-                    <div
-                      key={user.username}
-                      onClick={() => openChat(user)}
-                      className="chat-item flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-[#E9EDEF]"
-                    >
-                      {/* Avatar */}
-                      <div className="w-12 h-12 bg-[#DFE5E7] rounded-full flex items-center justify-center flex-shrink-0">
-                        <User className="w-7 h-7 text-white" />
+                  <span className="text-xs">Your Story</span>
+                </button>
+
+                {/* User Stories */}
+                {stories.filter(s => s.username !== myUsername).map((user, i) => (
+                  <div key={i} className="flex flex-col items-center gap-1 flex-shrink-0">
+                    <div className="avatar-ring story-ring p-[2px]">
+                      <div className="w-16 h-16 bg-gradient-to-br from-indigo-400 to-pink-400 rounded-full flex items-center justify-center text-white text-lg font-bold">
+                        {user.username[0]?.toUpperCase()}
+                      </div>
+                    </div>
+                    <span className="text-xs truncate w-16 text-center">{user.username}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Posts */}
+            <div className="space-y-4 lg:space-y-6 p-4 lg:p-0">
+              {posts.length === 0 ? (
+                <div className="bg-white rounded-xl p-8 text-center border">
+                  <Image className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <h3 className="font-medium mb-1">No posts yet</h3>
+                  <p className="text-sm text-gray-500 mb-4">Be the first to share something!</p>
+                  <button
+                    onClick={() => setShowCreatePost(true)}
+                    className="btn btn-primary"
+                  >
+                    Create Post
+                  </button>
+                </div>
+              ) : (
+                posts.map((post) => (
+                  <motion.article
+                    key={post.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white border rounded-xl overflow-hidden"
+                  >
+                    {/* Post Header */}
+                    <div className="flex items-center justify-between p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
+                          {post.author_username[0]?.toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-medium">{post.author_username}</div>
+                          <div className="text-xs text-gray-500">
+                            {new Date(post.created_at).toLocaleDateString()}
+                          </div>
+                        </div>
+                      </div>
+                      <button className="btn-ghost">
+                        <MoreHorizontal className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    {/* Post Image */}
+                    {post.image_url && (
+                      <div className="aspect-square bg-gray-100 relative overflow-hidden">
+                        <img
+                          src={post.image_url}
+                          alt=""
+                          className="w-full h-full object-cover post-image"
+                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                      </div>
+                    )}
+
+                    {/* Post Actions */}
+                    <div className="p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-4">
+                          <button
+                            onClick={() => toggleLike(post.id, post.is_liked)}
+                            className={`transition-transform hover:scale-110 ${post.is_liked ? 'like-animation' : ''}`}
+                          >
+                            <Heart className={`w-7 h-7 ${post.is_liked ? 'fill-red-500 text-red-500' : ''}`} />
+                          </button>
+                          <button onClick={() => { setShowComments(post.id); fetchComments(post.id); }}>
+                            <MessageCircle className="w-7 h-7" />
+                          </button>
+                          <button>
+                            <Send className="w-6 h-6" />
+                          </button>
+                        </div>
+                        <button>
+                          <Bookmark className="w-6 h-6" />
+                        </button>
                       </div>
 
-                      {/* Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-baseline">
-                          <h3 className="font-medium text-[#111B21] truncate">{user.username}</h3>
-                          <span className="text-xs text-[#667781]">{user.lastMessageTime || ''}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <CheckCheck className="w-4 h-4 text-[#53BDEB]" />
-                          <p className="text-sm text-[#667781] truncate">{user.lastMessage}</p>
-                        </div>
+                      {/* Likes */}
+                      <div className="font-semibold mb-1">{post.likes_count} likes</div>
+
+                      {/* Caption */}
+                      <div className="mb-2">
+                        <span className="font-semibold mr-2">{post.author_username}</span>
+                        <span>{post.content}</span>
                       </div>
 
-                      {/* Unread Badge */}
-                      {user.unread && user.unread > 0 && (
-                        <div className="w-5 h-5 bg-[#25D366] rounded-full flex items-center justify-center">
-                          <span className="text-xs text-white font-medium">{user.unread}</span>
+                      {/* Comments Link */}
+                      {post.comments_count > 0 && (
+                        <button
+                          onClick={() => { setShowComments(post.id); fetchComments(post.id); }}
+                          className="text-gray-500 text-sm"
+                        >
+                          View all {post.comments_count} comments
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Quick Comment */}
+                    <div className="border-t px-4 py-3 flex items-center gap-3">
+                      <Smile className="w-6 h-6 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Add a comment..."
+                        className="flex-1 text-sm outline-none"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && e.currentTarget.value) {
+                            setNewComment(e.currentTarget.value);
+                            addComment(post.id);
+                            e.currentTarget.value = '';
+                          }
+                        }}
+                      />
+                      <button className="text-indigo-500 font-semibold text-sm">Post</button>
+                    </div>
+                  </motion.article>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Profile View */}
+        {view === 'PROFILE' && (
+          <div className="max-w-4xl mx-auto p-4">
+            <div className="bg-white rounded-xl border p-6">
+              <div className="flex items-start gap-8 mb-6">
+                <div className="w-24 h-24 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white text-3xl font-bold">
+                  {myUsername[0]?.toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-4 mb-4">
+                    <h1 className="text-xl font-medium">{myUsername}</h1>
+                    <button className="btn btn-primary py-2 px-4">Edit Profile</button>
+                    <button className="btn-ghost p-2"><Settings className="w-5 h-5" /></button>
+                  </div>
+                  <div className="flex gap-8 mb-4">
+                    <div><strong>{posts.filter(p => p.author_username === myUsername).length}</strong> posts</div>
+                    <div><strong>0</strong> followers</div>
+                    <div><strong>0</strong> following</div>
+                  </div>
+                  <p className="text-gray-600">No bio yet. Click Edit Profile to add one!</p>
+                </div>
+              </div>
+
+              {/* User Posts Grid */}
+              <div className="border-t pt-4">
+                <div className="grid grid-cols-3 gap-1">
+                  {posts.filter(p => p.author_username === myUsername).map(post => (
+                    <div key={post.id} className="aspect-square bg-gray-100 rounded overflow-hidden">
+                      {post.image_url ? (
+                        <img src={post.image_url} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm p-2 text-center">
+                          {post.content.substring(0, 50)}...
                         </div>
                       )}
                     </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Messages View */}
+        {view === 'MESSAGES' && (
+          <div className="max-w-xl mx-auto p-4">
+            <div className="bg-white rounded-xl border p-6 text-center">
+              <Lock className="w-12 h-12 mx-auto mb-3 text-indigo-500" />
+              <h2 className="text-xl font-bold mb-2">Secure Messages</h2>
+              <p className="text-gray-500 mb-4">Your messages are end-to-end encrypted</p>
+              <div className="space-y-2">
+                {users.filter(u => u.username !== myUsername).map(user => (
+                  <div key={user.username} className="flex items-center gap-3 p-3 border rounded-xl hover:bg-gray-50 cursor-pointer">
+                    <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
+                      {user.username[0]?.toUpperCase()}
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="font-medium">{user.username}</div>
+                      <div className="text-sm text-gray-500">Tap to start chatting</div>
+                    </div>
+                    <MessageCircle className="w-5 h-5 text-gray-400" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Mobile Bottom Nav */}
+      <nav className="bottom-nav lg:hidden flex justify-around">
+        {[
+          { icon: Home, view: 'FEED' },
+          { icon: Search, view: 'EXPLORE' },
+          { icon: PlusSquare, action: () => setShowCreatePost(true) },
+          { icon: Film, view: 'FEED' },
+          { icon: User, view: 'PROFILE' },
+        ].map((item, i) => (
+          <button
+            key={i}
+            onClick={() => item.action ? item.action() : item.view && setView(item.view as any)}
+            className={`p-3 ${view === item.view ? 'nav-active' : ''}`}
+          >
+            <item.icon className="w-6 h-6" />
+          </button>
+        ))}
+      </nav>
+
+      {/* Create Post Modal */}
+      <AnimatePresence>
+        {showCreatePost && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-4"
+            onClick={() => setShowCreatePost(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-2xl w-full max-w-lg overflow-hidden shadow-xl"
+            >
+              <div className="flex items-center justify-between p-4 border-b">
+                <button onClick={() => setShowCreatePost(false)}>
+                  <X className="w-6 h-6" />
+                </button>
+                <h2 className="font-semibold">Create Post</h2>
+                <button
+                  onClick={createPost}
+                  className="text-indigo-500 font-semibold"
+                >
+                  Share
+                </button>
+              </div>
+
+              <div className="p-4">
+                <div className="flex items-start gap-3 mb-4">
+                  <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0">
+                    {myUsername[0]?.toUpperCase()}
+                  </div>
+                  <textarea
+                    value={newPostContent}
+                    onChange={e => setNewPostContent(e.target.value)}
+                    placeholder="What's on your mind?"
+                    className="flex-1 resize-none outline-none text-lg min-h-[120px]"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    value={newPostImage}
+                    onChange={e => setNewPostImage(e.target.value)}
+                    placeholder="Image URL (optional)"
+                    className="input"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-4 border-t">
+                  <button className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-100">
+                    <Image className="w-5 h-5 text-green-500" />
+                    <span className="text-sm">Photo</span>
+                  </button>
+                  <button className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-100">
+                    <Camera className="w-5 h-5 text-blue-500" />
+                    <span className="text-sm">Camera</span>
+                  </button>
+                  <button className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-100">
+                    <Smile className="w-5 h-5 text-yellow-500" />
+                    <span className="text-sm">Emoji</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Comments Modal */}
+      <AnimatePresence>
+        {showComments && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 modal-overlay flex items-end lg:items-center justify-center"
+            onClick={() => setShowComments(null)}
+          >
+            <motion.div
+              initial={{ y: 100 }}
+              animate={{ y: 0 }}
+              exit={{ y: 100 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white rounded-t-2xl lg:rounded-2xl w-full max-w-lg max-h-[80vh] overflow-hidden"
+            >
+              <div className="p-4 border-b text-center relative">
+                <h2 className="font-semibold">Comments</h2>
+                <button
+                  onClick={() => setShowComments(null)}
+                  className="absolute right-4 top-4"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto max-h-[50vh] p-4 space-y-4">
+                {comments.length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">No comments yet. Be the first!</p>
+                ) : (
+                  comments.map(comment => (
+                    <div key={comment.id} className="flex gap-3">
+                      <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
+                        {comment.author_username[0]?.toUpperCase()}
+                      </div>
+                      <div>
+                        <div>
+                          <span className="font-semibold text-sm">{comment.author_username}</span>
+                          <span className="text-sm ml-2">{comment.content}</span>
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {new Date(comment.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
                   ))
                 )}
-              </>
-            )}
-
-            {activeTab === 'STATUS' && (
-              <div className="p-8 text-center text-gray-500">
-                <CircleDot className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>Status feature coming soon</p>
               </div>
-            )}
 
-            {activeTab === 'CALLS' && (
-              <div className="p-8 text-center text-gray-500">
-                <Phone className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>Calls feature coming soon</p>
-              </div>
-            )}
-          </div>
-
-          {/* FAB */}
-          <button
-            onClick={fetchUsers}
-            className="fab absolute bottom-6 right-6 md:right-auto md:left-[340px] w-14 h-14 bg-[#00A884] rounded-full flex items-center justify-center text-white"
-          >
-            <Plus className="w-6 h-6" />
-          </button>
-        </div>
-
-        {/* RIGHT PANEL - Placeholder or Chat */}
-        <div className="hidden md:flex flex-1 bg-[#F0F2F5] items-center justify-center">
-          <div className="text-center">
-            <div className="w-20 h-20 bg-[#00A884]/10 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Lock className="w-10 h-10 text-[#00A884]" />
-            </div>
-            <h2 className="text-2xl text-[#41525D] mb-2">SecureChat for Desktop</h2>
-            <p className="text-[#667781] max-w-md">
-              Select a chat to start messaging. Your messages are end-to-end encrypted.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // --- CHAT VIEW ---
-  return (
-    <div className="min-h-screen flex flex-col bg-[#EFEAE2]">
-      {/* Chat Header */}
-      <header className="h-14 bg-[#008069] flex items-center px-4 gap-3 text-white">
-        <button onClick={() => setView('MAIN')} className="p-1 hover:bg-white/10 rounded-full">
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <div className="w-10 h-10 bg-[#DFE5E7] rounded-full flex items-center justify-center">
-          <User className="w-6 h-6 text-[#54656F]" />
-        </div>
-        <div className="flex-1">
-          <h2 className="font-medium">{selectedPeer?.username}</h2>
-          <p className="text-xs opacity-80">End-to-End Encrypted</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="p-2 hover:bg-white/10 rounded-full"><Camera className="w-5 h-5" /></button>
-          <button className="p-2 hover:bg-white/10 rounded-full"><Phone className="w-5 h-5" /></button>
-          <button className="p-2 hover:bg-white/10 rounded-full"><MoreVertical className="w-5 h-5" /></button>
-        </div>
-      </header>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 chat-bg-pattern">
-        {/* E2EE Notice */}
-        <div className="flex justify-center mb-4">
-          <div className="bg-[#FFEFB8] text-[#54656F] text-xs px-3 py-1 rounded flex items-center gap-1">
-            <Lock className="w-3 h-3" />
-            Messages are end-to-end encrypted
-          </div>
-        </div>
-
-        {/* Message Bubbles */}
-        <div className="space-y-1 max-w-3xl mx-auto">
-          {messages.map((msg) => {
-            const isMe = msg.sender_username === myUsername;
-            let content = "";
-
-            if (isMe) {
-              content = "📤 Encrypted";
-            } else if (myKeys && selectedPeer) {
-              const dec = decryptMessage(msg.encryptedContent, myKeys.secretKey, selectedPeer.public_key);
-              content = dec || "🔒 Unable to decrypt";
-            }
-
-            return (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                key={msg.id}
-                className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`relative max-w-[65%] px-3 py-2 rounded-lg shadow-sm ${isMe
-                      ? 'bg-[#D9FDD3] bubble-outgoing'
-                      : 'bg-white bubble-incoming'
-                    }`}
-                >
-                  <p className="text-[#111B21] text-sm break-words pr-12">{content}</p>
-                  <div className="absolute bottom-1 right-2 flex items-center gap-1">
-                    <span className="text-[10px] text-[#667781]">
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {isMe && <CheckCheck className="w-4 h-4 text-[#53BDEB] double-check" />}
-                  </div>
+              <div className="border-t p-4 flex items-center gap-3">
+                <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
+                  {myUsername[0]?.toUpperCase()}
                 </div>
-              </motion.div>
-            );
-          })}
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      {/* Input Area */}
-      <div className="bg-[#F0F2F5] p-2 flex items-center gap-2">
-        <button className="p-2 text-[#54656F] hover:bg-gray-200 rounded-full">
-          <Paperclip className="w-6 h-6" />
-        </button>
-
-        <form onSubmit={handleSend} className="flex-1 flex items-center gap-2">
-          <div className="flex-1 bg-white rounded-full flex items-center px-4 py-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputMsg}
-              onChange={e => setInputMsg(e.target.value)}
-              placeholder="Type a message"
-              className="flex-1 outline-none text-sm"
-            />
-            <button type="button" className="text-[#54656F] p-1">
-              <Camera className="w-5 h-5" />
-            </button>
-          </div>
-
-          <button
-            type="submit"
-            className="w-12 h-12 bg-[#00A884] rounded-full flex items-center justify-center text-white hover:bg-[#008c6f] transition-colors"
-          >
-            {inputMsg.trim() ? <Send className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-          </button>
-        </form>
-      </div>
+                <input
+                  type="text"
+                  value={newComment}
+                  onChange={e => setNewComment(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && showComments) {
+                      addComment(showComments);
+                    }
+                  }}
+                  placeholder="Add a comment..."
+                  className="flex-1 outline-none text-sm"
+                />
+                <button
+                  onClick={() => showComments && addComment(showComments)}
+                  className="text-indigo-500 font-semibold text-sm"
+                >
+                  Post
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
