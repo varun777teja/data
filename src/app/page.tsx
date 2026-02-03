@@ -4,14 +4,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { generateKeyPair, encryptMessage, decryptMessage, KeyPair, EncryptedMessage } from '@/utils/crypto';
 import { IdentityVault } from '@/utils/vault';
 import { supabase } from '@/utils/supabase';
-import { Lock, Unlock, ShieldCheck, Trash2, Send, Zap, Users, UserPlus, RefreshCw } from 'lucide-react';
-import { motion } from 'framer-motion';
-import clsx from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: (string | undefined | null | false)[]) {
-  return twMerge(clsx(inputs));
-}
+import {
+  MessageCircle, Phone, CircleDot, Settings, Search, MoreVertical,
+  Camera, Paperclip, Mic, Send, Check, CheckCheck, Plus, ArrowLeft,
+  Shield, Lock, User, MessageSquare
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 // --- Types ---
 interface MessageLog {
@@ -20,74 +18,80 @@ interface MessageLog {
   receiver_username: string;
   encryptedContent: EncryptedMessage;
   timestamp: string;
-  decrypted?: string; // Local state only
 }
 
 interface UserProfile {
   username: string;
   public_key: string;
+  lastMessage?: string;
+  lastMessageTime?: string;
+  unread?: number;
 }
 
-export default function SecureChatApp() {
-  const [view, setView] = useState<'BOOT' | 'AUTH' | 'LOBBY' | 'CHAT'>('BOOT');
+type TabType = 'CHATS' | 'STATUS' | 'CALLS' | 'SETTINGS';
 
-  // Auth & Identity
+export default function WhatsAppSecureChat() {
+  // Views
+  const [view, setView] = useState<'BOOT' | 'AUTH' | 'MAIN' | 'CHAT'>('BOOT');
+  const [activeTab, setActiveTab] = useState<TabType>('CHATS');
+
+  // Auth
   const [pin, setPin] = useState("");
-  const [username, setUsername] = useState(""); // For registration
-  const [myKeys, setMyKeys] = useState<KeyPair | null>(null);
-  const [myUsername, setMyUsername] = useState<string>("");
-
-  // Lobby / Network
-  const [activeUsers, setActiveUsers] = useState<UserProfile[]>([]);
-  const [selectedPeer, setSelectedPeer] = useState<UserProfile | null>(null);
-
-  // Chat
-  const [messages, setMessages] = useState<MessageLog[]>([]);
-  const [inputMsg, setInputMsg] = useState("");
+  const [username, setUsername] = useState("");
   const [isRegistering, setIsRegistering] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Identity
+  const [myKeys, setMyKeys] = useState<KeyPair | null>(null);
+  const [myUsername, setMyUsername] = useState("");
 
-  // --- BOOT SEQUENCE ---
+  // Users & Chat
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [selectedPeer, setSelectedPeer] = useState<UserProfile | null>(null);
+  const [messages, setMessages] = useState<MessageLog[]>([]);
+  const [inputMsg, setInputMsg] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // --- BOOT ---
   useEffect(() => {
-    const timer = setTimeout(() => {
-      const savedVault = localStorage.getItem('z_vault');
-      setIsRegistering(!savedVault);
+    setTimeout(() => {
+      const vault = localStorage.getItem('wa_vault');
+      setIsRegistering(!vault);
       setView('AUTH');
     }, 2000);
-    return () => clearTimeout(timer);
   }, []);
 
-  // --- SUPABASE SYNC ---
-  // Fetch users
+  // --- FETCH USERS ---
   const fetchUsers = async () => {
     const { data } = await supabase.from('users').select('*');
-    if (data) setActiveUsers(data.map(u => ({ username: u.username, public_key: u.public_key })));
+    if (data) {
+      setUsers(data.map(u => ({
+        username: u.username,
+        public_key: u.public_key,
+        lastMessage: "Tap to start secure chat",
+        lastMessageTime: "",
+        unread: 0
+      })));
+    }
   };
 
-  // Subscribe to messages
+  // --- REALTIME MESSAGES ---
   useEffect(() => {
-    if (view !== 'CHAT') return;
+    if (view !== 'CHAT' && view !== 'MAIN') return;
 
-    fetchUsers(); // Initial user list load
-
-    // Subscribe to new messages targeting me OR sent by me
-    const channel = supabase.channel('chat_room')
+    const channel = supabase.channel('messages_channel')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const newMsg = payload.new;
-        // Only add if it involves me
         if (newMsg.sender_username === myUsername || newMsg.receiver_username === myUsername) {
-
-          // Reconstruct encrypted object
           const encrypted: EncryptedMessage = {
             ciphertext: newMsg.ciphertext,
             nonce: newMsg.nonce,
-            authorPublicKey: "" // Not strictly needed for decryption if we know peer
+            authorPublicKey: ""
           };
-
           setMessages(prev => {
-            // Avoid duplicates
             if (prev.find(m => m.id === newMsg.id)) return prev;
             return [...prev, {
               id: newMsg.id,
@@ -95,7 +99,7 @@ export default function SecureChatApp() {
               receiver_username: newMsg.receiver_username,
               encryptedContent: encrypted,
               timestamp: newMsg.created_at
-            }]
+            }];
           });
         }
       })
@@ -104,253 +108,437 @@ export default function SecureChatApp() {
     return () => { supabase.removeChannel(channel); };
   }, [view, myUsername]);
 
+  // --- SCROLL TO BOTTOM ---
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  // --- AUTH HANDLERS ---
+  // --- AUTH ---
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    setStatusMsg("CRYPTOGRAPHIC OPERATIONS IN PROGRESS...");
+    setStatusMsg("");
 
     try {
       if (isRegistering) {
-        // REGISTER
-        if (pin.length < 4 || !username) {
-          setStatusMsg("ERROR: INVALID INPUT");
+        if (pin.length < 4 || !username.trim()) {
+          setStatusMsg("Enter a valid name and 4+ digit PIN");
           return;
         }
         const keys = generateKeyPair();
 
-        // 1. Save to Supabase (Public Identity)
         const { error } = await supabase.from('users').insert({
-          username: username,
+          username: username.trim(),
           public_key: keys.publicKey
         });
-
         if (error) throw error;
 
-        // 2. Save to Local Vault (Private Identity)
-        const vault = await IdentityVault.lock(JSON.stringify({ ...keys, username }), pin);
-        localStorage.setItem('z_vault', vault);
+        const vault = await IdentityVault.lock(JSON.stringify({ ...keys, username: username.trim() }), pin);
+        localStorage.setItem('wa_vault', vault);
 
         setMyKeys(keys);
-        setMyUsername(username);
-        setView('LOBBY');
+        setMyUsername(username.trim());
+        await fetchUsers();
+        setView('MAIN');
       } else {
-        // LOGIN
-        const vault = localStorage.getItem('z_vault');
-        if (!vault) return setIsRegistering(true);
+        const vault = localStorage.getItem('wa_vault');
+        if (!vault) { setIsRegistering(true); return; }
 
-        const jsonStr = await IdentityVault.unlock(vault, pin);
-        if (!jsonStr) {
-          setStatusMsg("ACCESS DENIED: INVALID PIN");
-          return;
-        }
+        const json = await IdentityVault.unlock(vault, pin);
+        if (!json) { setStatusMsg("Incorrect PIN"); return; }
 
-        const data = JSON.parse(jsonStr);
+        const data = JSON.parse(json);
         setMyKeys({ publicKey: data.publicKey, secretKey: data.secretKey });
-        setMyUsername(data.username || "Unknown");
-        setView('LOBBY');
+        setMyUsername(data.username);
+        await fetchUsers();
+        setView('MAIN');
       }
     } catch (err: any) {
-      setStatusMsg("SYSTEM ERROR: " + err.message);
+      setStatusMsg(err.message || "Error");
     }
   };
 
-  // --- SEND HANDLER ---
+  // --- SEND MESSAGE ---
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMsg.trim() || !selectedPeer || !myKeys) return;
 
-    try {
-      const encrypted = encryptMessage(inputMsg, myKeys.secretKey, selectedPeer.public_key);
+    const encrypted = encryptMessage(inputMsg, myKeys.secretKey, selectedPeer.public_key);
 
-      const { error } = await supabase.from('messages').insert({
-        sender_username: myUsername,
-        receiver_username: selectedPeer.username,
-        nonce: encrypted.nonce,
-        ciphertext: encrypted.ciphertext
-      });
+    const { error } = await supabase.from('messages').insert({
+      sender_username: myUsername,
+      receiver_username: selectedPeer.username,
+      nonce: encrypted.nonce,
+      ciphertext: encrypted.ciphertext
+    });
 
-      if (error) throw error;
-      setInputMsg("");
-    } catch (err) {
-      console.error(err);
-      alert("Transmission Failed");
+    if (!error) setInputMsg("");
+  };
+
+  // --- OPEN CHAT ---
+  const openChat = (user: UserProfile) => {
+    setSelectedPeer(user);
+    setMessages([]);
+    setView('CHAT');
+    // Load past messages
+    loadMessages(user.username);
+  };
+
+  const loadMessages = async (peerUsername: string) => {
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .or(`sender_username.eq.${myUsername},receiver_username.eq.${myUsername}`)
+      .order('created_at', { ascending: true });
+
+    if (data) {
+      const filtered = data.filter(m =>
+        (m.sender_username === peerUsername && m.receiver_username === myUsername) ||
+        (m.sender_username === myUsername && m.receiver_username === peerUsername)
+      );
+      setMessages(filtered.map(m => ({
+        id: m.id,
+        sender_username: m.sender_username,
+        receiver_username: m.receiver_username,
+        encryptedContent: { ciphertext: m.ciphertext, nonce: m.nonce, authorPublicKey: "" },
+        timestamp: m.created_at
+      })));
     }
   };
 
-
-  // --- VIEWS ---
-
+  // --- BOOT SCREEN ---
   if (view === 'BOOT') {
     return (
-      <div className="min-h-screen bg-black text-green-500 font-mono flex items-center justify-center">
-        <div className="animate-pulse flex flex-col items-center gap-4">
-          <ShieldCheck className="w-16 h-16" />
-          <div className="tracking-[0.5em] text-2xl">Z++ SECURE BOOT</div>
-        </div>
+      <div className="boot-screen min-h-screen flex flex-col items-center justify-center text-white">
+        <motion.div
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center">
+            <MessageCircle className="w-12 h-12 text-[#128C7E]" />
+          </div>
+          <h1 className="text-2xl font-light tracking-wider">SecureChat</h1>
+          <div className="flex items-center gap-2 text-sm opacity-80">
+            <Shield className="w-4 h-4" />
+            <span>End-to-End Encrypted</span>
+          </div>
+        </motion.div>
       </div>
-    )
+    );
   }
 
+  // --- AUTH SCREEN ---
   if (view === 'AUTH') {
     return (
-      <div className="min-h-screen bg-black text-green-500 font-mono flex items-center justify-center p-4">
-        <div className="w-full max-w-md border border-green-900 bg-green-900/10 p-8 rounded-xl backdrop-blur">
-          <h1 className="text-2xl font-bold mb-6 text-center glitch-text">{isRegistering ? 'NEW IDENTITY' : 'IDENTITY VERIFICATION'}</h1>
+      <div className="min-h-screen bg-[#F0F2F5] flex items-center justify-center p-4">
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          className="w-full max-w-sm bg-white rounded-2xl shadow-xl overflow-hidden"
+        >
+          {/* Header */}
+          <div className="bg-[#008069] p-6 text-white text-center">
+            <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
+              <Lock className="w-8 h-8" />
+            </div>
+            <h1 className="text-xl font-medium">{isRegistering ? 'Create Account' : 'Welcome Back'}</h1>
+            <p className="text-sm opacity-80 mt-1">Your messages are end-to-end encrypted</p>
+          </div>
 
-          <form onSubmit={handleAuth} className="space-y-6">
+          {/* Form */}
+          <form onSubmit={handleAuth} className="p-6 space-y-4">
             {isRegistering && (
               <div>
-                <label className="block text-xs mb-1 opacity-70">CODENAME</label>
+                <label className="text-xs text-gray-500 mb-1 block">Your Name</label>
                 <input
-                  className="w-full bg-black border border-green-700 p-3 text-center text-lg focus:border-green-400 outline-none rounded"
+                  type="text"
                   value={username}
-                  onChange={e => setUsername(e.target.value.toUpperCase())}
-                  placeholder="USER_X"
+                  onChange={e => setUsername(e.target.value)}
+                  className="w-full border-b-2 border-gray-200 focus:border-[#008069] py-2 text-lg transition-colors"
+                  placeholder="Enter your name"
                 />
               </div>
             )}
 
             <div>
-              <label className="block text-xs mb-1 opacity-70">SECURITY PIN</label>
+              <label className="text-xs text-gray-500 mb-1 block">Security PIN</label>
               <input
                 type="password"
-                className="w-full bg-black border border-green-700 p-3 text-center text-2xl tracking-[1em] focus:border-green-400 outline-none rounded"
                 value={pin}
-                onChange={e => setPin(e.target.value)}
+                onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
                 maxLength={6}
+                className="w-full border-b-2 border-gray-200 focus:border-[#008069] py-2 text-2xl tracking-[0.5em] text-center transition-colors"
                 placeholder="••••"
               />
             </div>
 
-            <div className="text-red-500 text-xs text-center h-4">{statusMsg}</div>
+            {statusMsg && (
+              <p className="text-red-500 text-sm text-center">{statusMsg}</p>
+            )}
 
-            <button className="w-full bg-green-600 hover:bg-green-500 text-black font-bold py-4 rounded transition-all">
-              {isRegistering ? 'INITIALIZE VAULT' : 'UNLOCK'}
+            <button
+              type="submit"
+              className="w-full bg-[#008069] hover:bg-[#006a57] text-white py-3 rounded-full font-medium transition-colors"
+            >
+              {isRegistering ? 'Get Started' : 'Unlock'}
             </button>
 
             {!isRegistering && (
-              <div className="text-center text-xs opacity-50 cursor-pointer hover:text-red-500" onClick={() => { localStorage.clear(); window.location.reload(); }}>
-                RESET IDENTITY
-              </div>
+              <button
+                type="button"
+                onClick={() => { localStorage.clear(); window.location.reload(); }}
+                className="w-full text-red-500 text-sm py-2 hover:underline"
+              >
+                Reset & Create New Account
+              </button>
             )}
           </form>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // --- MAIN SCREEN (WhatsApp Layout) ---
+  if (view === 'MAIN') {
+    const filteredUsers = users.filter(u =>
+      u.username !== myUsername &&
+      u.username.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    return (
+      <div className="min-h-screen bg-[#F0F2F5] flex">
+        {/* LEFT PANEL - Chat List */}
+        <div className="w-full md:w-[400px] bg-white flex flex-col border-r border-gray-200">
+          {/* Header */}
+          <div className="h-14 bg-[#F0F2F5] flex items-center justify-between px-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-[#DFE5E7] rounded-full flex items-center justify-center">
+                <User className="w-6 h-6 text-[#54656F]" />
+              </div>
+              <span className="font-medium text-[#111B21]">{myUsername}</span>
+            </div>
+            <div className="flex items-center gap-4 text-[#54656F]">
+              <button className="p-2 hover:bg-gray-200 rounded-full"><MessageSquare className="w-5 h-5" /></button>
+              <button className="p-2 hover:bg-gray-200 rounded-full"><MoreVertical className="w-5 h-5" /></button>
+            </div>
+          </div>
+
+          {/* Search */}
+          <div className="p-2">
+            <div className="bg-[#F0F2F5] rounded-lg flex items-center px-4 py-2 gap-3">
+              <Search className="w-5 h-5 text-[#54656F]" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search or start new chat"
+                className="bg-transparent flex-1 text-sm outline-none placeholder-[#667781]"
+              />
+            </div>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex border-b border-gray-100">
+            {(['CHATS', 'STATUS', 'CALLS'] as TabType[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 py-3 text-sm font-medium transition-colors ${activeTab === tab
+                    ? 'text-[#008069] border-b-2 border-[#008069]'
+                    : 'text-[#54656F] hover:bg-gray-50'
+                  }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          {/* Chat List */}
+          <div className="flex-1 overflow-y-auto">
+            {activeTab === 'CHATS' && (
+              <>
+                {filteredUsers.length === 0 ? (
+                  <div className="p-8 text-center text-gray-500">
+                    <MessageCircle className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                    <p>No contacts found</p>
+                    <p className="text-sm">Start chatting with someone!</p>
+                  </div>
+                ) : (
+                  filteredUsers.map(user => (
+                    <div
+                      key={user.username}
+                      onClick={() => openChat(user)}
+                      className="chat-item flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-[#E9EDEF]"
+                    >
+                      {/* Avatar */}
+                      <div className="w-12 h-12 bg-[#DFE5E7] rounded-full flex items-center justify-center flex-shrink-0">
+                        <User className="w-7 h-7 text-white" />
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-baseline">
+                          <h3 className="font-medium text-[#111B21] truncate">{user.username}</h3>
+                          <span className="text-xs text-[#667781]">{user.lastMessageTime || ''}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <CheckCheck className="w-4 h-4 text-[#53BDEB]" />
+                          <p className="text-sm text-[#667781] truncate">{user.lastMessage}</p>
+                        </div>
+                      </div>
+
+                      {/* Unread Badge */}
+                      {user.unread && user.unread > 0 && (
+                        <div className="w-5 h-5 bg-[#25D366] rounded-full flex items-center justify-center">
+                          <span className="text-xs text-white font-medium">{user.unread}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+
+            {activeTab === 'STATUS' && (
+              <div className="p-8 text-center text-gray-500">
+                <CircleDot className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>Status feature coming soon</p>
+              </div>
+            )}
+
+            {activeTab === 'CALLS' && (
+              <div className="p-8 text-center text-gray-500">
+                <Phone className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>Calls feature coming soon</p>
+              </div>
+            )}
+          </div>
+
+          {/* FAB */}
+          <button
+            onClick={fetchUsers}
+            className="fab absolute bottom-6 right-6 md:right-auto md:left-[340px] w-14 h-14 bg-[#00A884] rounded-full flex items-center justify-center text-white"
+          >
+            <Plus className="w-6 h-6" />
+          </button>
+        </div>
+
+        {/* RIGHT PANEL - Placeholder or Chat */}
+        <div className="hidden md:flex flex-1 bg-[#F0F2F5] items-center justify-center">
+          <div className="text-center">
+            <div className="w-20 h-20 bg-[#00A884]/10 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Lock className="w-10 h-10 text-[#00A884]" />
+            </div>
+            <h2 className="text-2xl text-[#41525D] mb-2">SecureChat for Desktop</h2>
+            <p className="text-[#667781] max-w-md">
+              Select a chat to start messaging. Your messages are end-to-end encrypted.
+            </p>
+          </div>
         </div>
       </div>
     );
   }
 
-  if (view === 'LOBBY') {
-    return (
-      <div className="min-h-screen bg-[#050505] text-green-400 font-mono p-4">
-        <header className="flex justify-between items-center mb-8 border-b border-green-900/50 pb-4">
-          <div>
-            <h1 className="text-xl font-bold">LOBBY // <span className="text-white">{myUsername}</span></h1>
-            <p className="text-xs opacity-50">SECURE LINK ESTABLISHED</p>
-          </div>
-          <button onClick={fetchUsers} className="p-2 hover:bg-green-900/30 rounded"><RefreshCw className="w-5 h-5" /></button>
-        </header>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {activeUsers.filter(u => u.username !== myUsername).map(u => (
-            <div
-              key={u.username}
-              onClick={() => { setSelectedPeer(u); setView('CHAT'); }}
-              className="border border-green-900/50 bg-green-900/10 p-4 rounded cursor-pointer hover:bg-green-500 hover:text-black transition-all group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-black rounded-full flex items-center justify-center border border-green-500/50">
-                  <Users className="w-5 h-5 group-hover:text-green-500" />
-                </div>
-                <div>
-                  <div className="font-bold">{u.username}</div>
-                  <div className="text-[10px] opacity-60 truncate w-32">{u.public_key}</div>
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {activeUsers.length <= 1 && (
-            <div className="col-span-full text-center opacity-50 py-10 border border-dashed border-green-900 rounded">
-              Scanning for peers... (No other users found in DB)
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
   // --- CHAT VIEW ---
   return (
-    <div className="min-h-screen bg-[#050505] text-[#e0e0e0] font-mono flex flex-col h-screen overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-[#EFEAE2]">
       {/* Chat Header */}
-      <header className="h-16 flex items-center justify-between px-4 bg-black/80 border-b border-green-900/30">
-        <button onClick={() => setView('LOBBY')} className="text-xs hover:text-green-500">&larr; BACK</button>
-        <div className="text-center">
-          <div className="font-bold text-green-500">{selectedPeer?.username}</div>
-          <div className="text-[10px] opacity-50">E2EE ENCRYPTED CHANNEL</div>
+      <header className="h-14 bg-[#008069] flex items-center px-4 gap-3 text-white">
+        <button onClick={() => setView('MAIN')} className="p-1 hover:bg-white/10 rounded-full">
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <div className="w-10 h-10 bg-[#DFE5E7] rounded-full flex items-center justify-center">
+          <User className="w-6 h-6 text-[#54656F]" />
         </div>
-        <div className="w-8"></div>
+        <div className="flex-1">
+          <h2 className="font-medium">{selectedPeer?.username}</h2>
+          <p className="text-xs opacity-80">End-to-End Encrypted</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className="p-2 hover:bg-white/10 rounded-full"><Camera className="w-5 h-5" /></button>
+          <button className="p-2 hover:bg-white/10 rounded-full"><Phone className="w-5 h-5" /></button>
+          <button className="p-2 hover:bg-white/10 rounded-full"><MoreVertical className="w-5 h-5" /></button>
+        </div>
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages
-          .filter(m => (m.sender_username === selectedPeer?.username || m.receiver_username === selectedPeer?.username))
-          .map((msg) => {
+      <div className="flex-1 overflow-y-auto p-4 chat-bg-pattern">
+        {/* E2EE Notice */}
+        <div className="flex justify-center mb-4">
+          <div className="bg-[#FFEFB8] text-[#54656F] text-xs px-3 py-1 rounded flex items-center gap-1">
+            <Lock className="w-3 h-3" />
+            Messages are end-to-end encrypted
+          </div>
+        </div>
+
+        {/* Message Bubbles */}
+        <div className="space-y-1 max-w-3xl mx-auto">
+          {messages.map((msg) => {
             const isMe = msg.sender_username === myUsername;
+            let content = "";
 
-            // Decrypt on the fly
-            // Note: In React render cycle this is expensive, usually you'd memoize or decrypt once in useEffect.
-            // For demo simplicity, we do it here. 
-            // Wait, if I sent it, I can't decrypt it unless I stored it specially or I'm sending to myself.
-            // Standard Signal Protocol: You encrypt to recipient AND encrypt to yourself (for history).
-            // My simple `crypto.ts` only does one-way box.
-            // FIX: If I am sender, I can't read it from the `ciphertext` meant for Bob.
-            // Hack: Just show "You sent an encrypted message" or rely on local state?
-            // Better Hack: Show plaintext for me if I just sent it (state), but fetching from DB it will remain locked.
-            // "Z++" Feature: You can't read your own sent history on a new device? That's actually true for simple implementations!
-
-            let content = "Encrypted Message";
-            if (!isMe && myKeys && selectedPeer) {
+            if (isMe) {
+              content = "📤 Encrypted";
+            } else if (myKeys && selectedPeer) {
               const dec = decryptMessage(msg.encryptedContent, myKeys.secretKey, selectedPeer.public_key);
-              if (dec) content = dec;
-            } else if (isMe) {
-              content = ">> ENCRYPTED TRANSMISSION SENT >>";
+              content = dec || "🔒 Unable to decrypt";
             }
 
             return (
               <motion.div
-                initial={{ opacity: 0, x: isMe ? 20 : -20 }}
-                animate={{ opacity: 1, x: 0 }}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
                 key={msg.id}
-                className={cn("flex", isMe ? "justify-end" : "justify-start")}
+                className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
               >
-                <div className={cn("max-w-[75%] p-3 rounded border text-sm",
-                  isMe ? "bg-green-900/20 border-green-900 text-green-100" : "bg-gray-900 border-gray-700"
-                )}>
-                  <div className="mb-1 text-[10px] opacity-50 flex justify-between gap-4">
-                    <span>{isMe ? 'YOU' : msg.sender_username}</span>
-                    <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                <div
+                  className={`relative max-w-[65%] px-3 py-2 rounded-lg shadow-sm ${isMe
+                      ? 'bg-[#D9FDD3] bubble-outgoing'
+                      : 'bg-white bubble-incoming'
+                    }`}
+                >
+                  <p className="text-[#111B21] text-sm break-words pr-12">{content}</p>
+                  <div className="absolute bottom-1 right-2 flex items-center gap-1">
+                    <span className="text-[10px] text-[#667781]">
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    {isMe && <CheckCheck className="w-4 h-4 text-[#53BDEB] double-check" />}
                   </div>
-                  <div className="break-all">{content}</div>
                 </div>
               </motion.div>
             );
           })}
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
-      {/* Input */}
-      <div className="p-4 bg-black border-t border-green-900/30">
-        <form onSubmit={handleSend} className="flex gap-2">
-          <input
-            value={inputMsg}
-            onChange={e => setInputMsg(e.target.value)}
-            className="flex-1 bg-gray-900 text-white rounded p-3 outline-none border border-transparent focus:border-green-500 transition-all placeholder-gray-600"
-            placeholder="Type secure instruction..."
-          />
-          <button type="submit" className="bg-green-600 hover:bg-green-500 text-black px-4 rounded font-bold"><Send className="w-5 h-5" /></button>
+      {/* Input Area */}
+      <div className="bg-[#F0F2F5] p-2 flex items-center gap-2">
+        <button className="p-2 text-[#54656F] hover:bg-gray-200 rounded-full">
+          <Paperclip className="w-6 h-6" />
+        </button>
+
+        <form onSubmit={handleSend} className="flex-1 flex items-center gap-2">
+          <div className="flex-1 bg-white rounded-full flex items-center px-4 py-2">
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputMsg}
+              onChange={e => setInputMsg(e.target.value)}
+              placeholder="Type a message"
+              className="flex-1 outline-none text-sm"
+            />
+            <button type="button" className="text-[#54656F] p-1">
+              <Camera className="w-5 h-5" />
+            </button>
+          </div>
+
+          <button
+            type="submit"
+            className="w-12 h-12 bg-[#00A884] rounded-full flex items-center justify-center text-white hover:bg-[#008c6f] transition-colors"
+          >
+            {inputMsg.trim() ? <Send className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          </button>
         </form>
       </div>
     </div>
