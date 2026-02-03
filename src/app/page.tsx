@@ -8,6 +8,7 @@ import {
   Settings, LogOut, Compass, Film, Smile, Camera, Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import ChatPage from '@/components/ChatPage';
 
 // --- Types ---
 interface UserProfile {
@@ -37,9 +38,10 @@ interface Comment {
 
 export default function SocialMediaApp() {
   // Views - Simple flow: NAME_ENTRY -> FEED
-  const [view, setView] = useState<'NAME_ENTRY' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE'>('NAME_ENTRY');
+  const [view, setView] = useState<'NAME_ENTRY' | 'FEED' | 'PROFILE' | 'MESSAGES' | 'EXPLORE' | 'CHAT'>('NAME_ENTRY');
   const [showCreatePost, setShowCreatePost] = useState(false);
   const [showComments, setShowComments] = useState<string | null>(null);
+  const [chatWith, setChatWith] = useState<UserProfile | null>(null);
 
   // User
   const [myUsername, setMyUsername] = useState("");
@@ -536,7 +538,11 @@ export default function SocialMediaApp() {
               <p className="text-gray-500 mb-4">Chat with other users</p>
               <div className="space-y-2">
                 {users.filter(u => u.username !== myUsername).map(user => (
-                  <div key={user.username} className="flex items-center gap-3 p-3 border rounded-xl hover:bg-gray-50 cursor-pointer">
+                  <div
+                    key={user.username}
+                    onClick={() => { setChatWith(user); setView('CHAT'); }}
+                    className="flex items-center gap-3 p-3 border rounded-xl hover:bg-gray-50 cursor-pointer transition-colors"
+                  >
                     <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
                       {user.username[0]?.toUpperCase()}
                     </div>
@@ -547,9 +553,21 @@ export default function SocialMediaApp() {
                     <MessageCircle className="w-5 h-5 text-gray-400" />
                   </div>
                 ))}
+                {users.filter(u => u.username !== myUsername).length === 0 && (
+                  <p className="text-gray-400 text-sm py-4">No other users yet. Invite friends to join!</p>
+                )}
               </div>
             </div>
           </div>
+        )}
+
+        {/* Chat View - Beautiful Nexus Chat UI */}
+        {view === 'CHAT' && chatWith && (
+          <ChatPage
+            myUsername={myUsername}
+            chatWith={{ username: chatWith.username }}
+            onBack={() => { setChatWith(null); setView('MESSAGES'); }}
+          />
         )}
       </main>
 
