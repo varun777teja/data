@@ -1,42 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
+  --background: #050505;
+  --foreground: #e0e0e0;
+  --primary: #00ff41; /* Hacker Green */
+  --primary-dim: #008f11;
+  --secondary: #00b8ff; /* Cyber Blue */
+  --error: #ff3333;
+  --surface: #111111;
+  --surface-border: #333333;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  font-family: 'Courier New', Courier, monospace; /* Monospace for security feel */
+  overflow-x: hidden;
 }
 
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-dim);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+.glitch-text {
+  position: relative;
+  animation: glitch 2s infinite;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+@keyframes glitch {
+  0% { text-shadow: 2px 0 var(--error), -2px 0 var(--secondary); }
+  2% { text-shadow: 2px 0 var(--error), -2px 0 var(--secondary); }
+  5% { text-shadow: 0 0 transparent; }
+  100% { text-shadow: 0 0 transparent; }
+}
+
+.scanline {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: rgba(0, 255, 65, 0.1);
+  animation: scan 6s linear infinite;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+@keyframes scan {
+  0% { top: -10%; }
+  100% { top: 110%; }
+}
+
+/* Utilities */
+.glass-panel {
+  background: rgba(17, 17, 17, 0.8);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+}
+
+.btn-primary {
+  background: transparent;
+  border: 1px solid var(--primary);
+  color: var(--primary);
+  padding: 0.5rem 1rem;
+  font-family: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.btn-primary:hover {
+  background: var(--primary);
+  color: black;
+  box-shadow: 0 0 15px var(--primary);
+}
+
+.input-secure {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  color: var(--primary);
+  padding: 0.5rem;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+
+.input-secure:focus {
+  border-color: var(--primary);
 }
